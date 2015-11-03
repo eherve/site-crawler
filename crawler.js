@@ -4,8 +4,12 @@ var https = require('https');
 var url = require('url');
 var htmlparser = require("htmlparser2");
 
-var expression = /[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?/gi;
+// var expression = /[-a-zA-Z0-9@:%_\+.~#?&//=]{2,256}\.[a-z]{2,4}\b(\/[-a-zA-Z0-9@:%_\+.~#?&//=]*)?/gi;
+var expression = /(http(s)?:\/\/)?(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b[-a-zA-Z0-9@:%_\+.~#?&\/=]*/gi
 var regex = new RegExp(expression);
+
+var externUrl = /http(s)?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}\b[-a-zA-Z0-9@:%_\+.~#?&\/=]*/gi
+var regexExternUrl = new RegExp(externUrl);
 
 var timeout = 5000;
 
@@ -24,7 +28,9 @@ var filters = [
   new RegExp('[^?]+\.png($|[?].*)'),
   new RegExp('[^?]+\.jpeg($|[?].*)'),
   new RegExp('^[a-z]+to:.*'),
-  new RegExp('^tel:.*')
+  new RegExp('^tel:.*'),
+  new RegExp('^irc:.*'),
+  new RegExp('^javascript:.*')
 ];
 
 process.on('exit', function() {
@@ -50,9 +56,11 @@ function parse(data) {
       }
     },
     ontext: function(text) {
-      var match = text.match(regex);
+      var match = text.match(regexExternUrl);
       if (match && match.length > 0) {
-        //console.log(match);
+        match.forEach(function(url) {
+          links.push({ url: url, type: 'text' });
+        });
       }
     },
     onclosetag: function(tagname) {}
@@ -73,32 +81,43 @@ function hasHeader(header, headers) {
 }
 
 function fetch(options, cb) {
-var transport = options.protocol === 'https:' ? https : http;
-try {
-  var req = transport.request(options, function(res) {
-    if (res.statusCode >= 300 && res.statusCode < 400) {
-      var location = hasHeader('location', res.headers);
-      if (location) {
-        // console.log('***** redirection', location);
-        stats.redirection = ++stats.redirection;
-        run(url.parse(location));
+  options.agent = false;
+  var transport;
+  if (options.protocol === 'https:') {
+  transport = https;
+  options.rejectUnauthorized = false;
+  } else {
+  transport = http;
+  }
+  try {
+    var req = transport.request(options, function(res) {
+      if (res.statusCode >= 300 && res.statusCode < 400) {
+        var location = hasHeader('location', res.headers);
+        if (location) {
+          // console.log('***** redirection', location);
+          stats.redirection = ++stats.redirection;
+          run(url.parse(location));
+        }
       }
-    }
-    var data = "";
-    res.setEncoding('utf8');
-    res.on('data', function(d) { data += d; });
-    res.on('end', function() { cb(null, data); });
-  });
-  var hasTimeout = false;
-  req.on('error', function(err) { hasTimeout ? cb('timeout') : cb(err); });
-  req.on('socket', function(socket) {
-    socket.setTimeout(timeout);  
-    socket.on('timeout', function() {
-      hasTimeout = true;
-      req.abort();
+      var data = "";
+      res.setEncoding('utf8');
+      res.on('data', function(d) { data += d; });
+      res.on('end', function() { cb(null, data); });
     });
-  });
-  req.end();
+    req._implicitHeader = function() {
+      this._storeHeader(this.method + ' ' + this.path + ' HTTP/1.0\r\n',
+        this._renderHeaders());
+    };
+    var hasTimeout = false;
+    req.on('error', function(err) { hasTimeout ? cb('timeout') : cb(err); });
+    req.on('socket', function(socket) {
+      socket.setTimeout(timeout);  
+      socket.on('timeout', function() {
+        hasTimeout = true;
+        req.abort();
+      });
+    });
+    req.end();
   } catch (err) { cb(err); }
 }
 
